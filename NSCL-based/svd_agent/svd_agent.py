@@ -44,13 +44,16 @@ class SVDAgent(Agent):
         bn_params = [p for n, p in self.model.named_parameters() if 'bn' in n]
         model_optimizer_arg = {'params': [{'params': fea_params, 'svd': True, 'lr': self.svd_lr,
                                             'thres': self.config['svd_thres']},
-                                          {'params': cls_params, 'weight_decay': 0.0,
-                                              'lr': self.config['head_lr']},
-                                          {'params': bn_params, 'lr': self.config['bn_lr']}],
-                               'lr': self.config['model_lr'],
-                               'weight_decay': self.config['model_weight_decay']}
-        if self.config['model_optimizer'] in ['SGD', 'RMSprop']:
+                                        {'params': cls_params, 'weight_decay': 0.0,
+                                            'lr': self.config['head_lr']},
+                                        {'params': bn_params, 'lr': self.config['bn_lr']}],
+                            'lr': self.config['model_lr'],
+                            'weight_decay': self.config['model_weight_decay']}
+            
+        if self.config['model_optimizer'] in ['SGD', 'RMSprop', "SGDSVD"]:
             model_optimizer_arg['momentum'] = self.config['momentum']
+            if "SGD" in self.config['model_optimizer']:
+                model_optimizer_arg['nesterov'] = self.config['nesterov']
         elif self.config['model_optimizer'] in ['Rprop']:
             model_optimizer_arg.pop('weight_decay')
         elif self.config['model_optimizer'] in ['amsgrad']:

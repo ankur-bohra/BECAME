@@ -48,7 +48,7 @@ def run(args, results_dir):
         exp_name = 'test_' + exp_name
     if args.suffix:
         exp_name += f'_{args.suffix}'
-    agent_config = {'model_lr': args.model_lr, 'momentum': args.momentum, 'model_weight_decay': args.model_weight_decay,
+    agent_config = {'model_lr': args.model_lr, 'momentum': args.momentum, 'model_weight_decay': args.model_weight_decay, 'nesterov': args.nesterov,
                     'schedule': args.schedule,
                     'model_type': args.model_type, 'model_name': args.model_name, 'model_weights': args.model_weights,
                     'out_dim': {'All': args.force_out_dim} if args.force_out_dim > 0 else task_output_space,
@@ -85,6 +85,11 @@ def run(args, results_dir):
 
     # Decide split ordering
     task_names = sorted(list(task_output_space.keys()), key=int)
+    
+    # Limit number of tasks if specified
+    if args.num_tasks > 0:
+        task_names = task_names[:args.num_tasks]
+    
     agent.task_names = task_names
     print('Task order:', task_names)
 
@@ -164,6 +169,7 @@ def run(args, results_dir):
                                                      batch_size=args.batch_size, shuffle=False,
                                                      num_workers=args.workers)
             acc_table_np[i, j], _ = agent.validation(val_loader)
+            print('Accuracy on task {} after learning task {}: {:.2f}%'.format(val_name, task_names[i], acc_table_np[i, j]*100))
 
             # print("**************************************************")
             
@@ -230,6 +236,8 @@ def get_args(argv):
                         default=1.0, help='reserve eigenvector')
 
     parser.add_argument('--momentum', type=float, default=0)
+    parser.add_argument('--nesterov', default=False, action='store_true', 
+                        help="Use Nesterov momentum for SGD")
 
     parser.add_argument('--model_weight_decay',
                         type=float, default=1e-5)  # 1e-4
@@ -274,6 +282,8 @@ def get_args(argv):
     parser.add_argument('--early_stop', default=False, action='store_true', help='whether to use early stopping')
     parser.add_argument('--lr_decay', type=float, default=0.5)
     parser.add_argument('--decay_time', type=int, default=3)
+    parser.add_argument('--num_tasks', type=int, default=-1,
+                        help="Number of tasks to run. -1 means all tasks.")
     args = parser.parse_args(argv)
     return args
 
