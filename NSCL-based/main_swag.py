@@ -70,7 +70,6 @@ def run(args, results_dir):
                     'distill_ep': args.distill,
                     'multi_task': args.multi_task,
                     'class_icr': args.incremental_class,
-                    'fisher_m': args.fisher_m,
                     'do_analysis': args.do_analysis,
                     'val_freq': args.val_freq,
                     'connector': args.connector_base,
@@ -78,9 +77,13 @@ def run(args, results_dir):
                     'patience': args.patience,
                     'lr_decay': args.lr_decay,
                     'decay_time': args.decay_time,
+                    'merge_method': args.merge_method,
+                    'swag_start': args.swag_start,
+                    'swag_collect_freq': args.swag_collect_freq,
+                    'swag_max_num_models': args.swag_max_num_models
                     }
     
-    agent = factory('svd_agent', args.agent_type,
+    agent = factory('swag_svd_agent', args.agent_type,
                     args.agent_name)(agent_config)
 
     # Decide split ordering
@@ -127,12 +130,14 @@ def run(args, results_dir):
                 agent.init_model_optimizer()
                 agent.model_optimizer.switch = False
                 agent.is_distill = True  
-                agent.fisher_m = False
+                # agent.fisher_m = False
+                agent.merge_method = 'weighted_average'
                 agent.merge_list = args.schedule[-1:]
                 agent.train_task(train_loader, val_loader, args.schedule[-1])
                 agent.m_model = copy.deepcopy(agent.model.state_dict())
                 agent.is_distill = False
-                agent.fisher_m = args.fisher_m
+                # agent.fisher_m = args.fisher_m
+                agent.merge_method = args.merge_method
                 agent.merge_list = args.merge_list
 
             # stage 2: stability-plasticity trade-off
@@ -151,7 +156,10 @@ def run(args, results_dir):
             agent.train_task(train_loader, val_loader, args.schedule[-1], early_stop=args.early_stop)
             
         # update fisher matrix
-        agent.update_fisher_matrix_diag(train_loader)
+        if args.merge_method == 'fisher':
+            agent.update_fisher_matrix_diag(train_loader)
+        elif args.merge_method == 'swag':
+            agent.update_precision()
 
         # AfterTrain
         agent.after_train(train_loader)
@@ -273,7 +281,8 @@ def get_args(argv):
     parser.add_argument('--multi_task', default=False, action='store_true',
                         help='whether to use multi-task learning, training all the tasks at the same time')
     parser.add_argument('--suffix', type=str, default='', help='the suffix for the results dir')
-    parser.add_argument('--fisher_m', default=False, action='store_true', help='whether to use fisher matrix')
+    # parser.add_argument('--fisher_m', default=False, action='store_true', help='whether to use fisher matrix')
+    parser.add_argument('--merge_method', default='weighted_average', help='the method used for merging models', choices=['fisher', 'swag'], required=False)
     parser.add_argument('--do_analysis', default=False, action='store_true', help='whether to do merge analysis')
     parser.add_argument('--val_freq', type=int, default=10, help='the frequency of validation')
     parser.add_argument('--connector_base', default=False, action='store_true', help='whether to use connector')
@@ -282,8 +291,16 @@ def get_args(argv):
     parser.add_argument('--early_stop', default=False, action='store_true', help='whether to use early stopping')
     parser.add_argument('--lr_decay', type=float, default=0.5)
     parser.add_argument('--decay_time', type=int, default=3)
+
     parser.add_argument('--num_tasks', type=int, default=-1,
                         help="Number of tasks to run. -1 means all tasks.")
+    parser.add_argument('--swag_start', type=int, default=50,
+                        help="Epoch to start SWAG collection")
+    parser.add_argument('--swag_collect_freq', type=int, default=5,
+                        help="SWAG collection frequency (in epochs)")
+    parser.add_argument('--swag_max_num_models', type=int, default=20,
+                        help="Maximum number of SWAG models to collect")
+    #! SWA(G) schedule
     args = parser.parse_args(argv)
     return args
 
