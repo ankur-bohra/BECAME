@@ -10,6 +10,8 @@ class SVDAgentAvg(SVDAgent):
 
     # These functions are used for NSCL projection
     def compute_cov(self, module, fea_in, fea_out):
+        # if self.task_count > 1:
+        #     print(f'Computing covariance for {module.__class__.__name__}... fea_in max: {max(abs(torch.mean(fea_in[0], 0, True).view(-1)))}')
         if isinstance(module, nn.Linear):
             self.update_cov(torch.mean(fea_in[0], 0, True), module.weight)
 

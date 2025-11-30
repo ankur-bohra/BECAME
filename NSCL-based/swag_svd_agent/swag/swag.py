@@ -49,11 +49,18 @@ class SWAG(torch.nn.Module):
         self.var_clamp = var_clamp
 
         self.base = base(*args, **kwargs)
-        self.base.apply(
-            lambda module: swag_parameters(
-                module=module, params=self.params, no_cov_mat=self.no_cov_mat, restrict_params=restrict_params
-            )
-        )
+
+        params_by_module = {}
+        for name in restrict_params:
+            module_name = ".".join(name.split(".")[:-1])
+            param_name = name.split(".")[-1]
+            if module_name not in params_by_module:
+                params_by_module[module_name] = []
+            params_by_module[module_name].append(param_name)
+        
+        for module_name, restrict_params in params_by_module.items():
+            module = self.base.get_submodule(module_name)
+            swag_parameters(module, self.params, self.no_cov_mat, params_by_module[module_name])
 
     def forward(self, *args, **kwargs):
         return self.base(*args, **kwargs)
@@ -148,6 +155,7 @@ class SWAG(torch.nn.Module):
             module.__setattr__(name, sample.cuda())
 
     def collect_model(self, base_model):
+        base_model.cpu()
         for (module, name), base_param in zip(self.params, base_model.parameters()):
             mean = module.__getattr__("%s_mean" % name)
             sq_mean = module.__getattr__("%s_sq_mean" % name)
@@ -178,6 +186,7 @@ class SWAG(torch.nn.Module):
             module.__setattr__("%s_mean" % name, mean)
             module.__setattr__("%s_sq_mean" % name, sq_mean)
         self.n_models.add_(1)
+        base_model.cuda()
 
     def load_state_dict(self, state_dict, strict=True):
         if not self.no_cov_mat:

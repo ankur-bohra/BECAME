@@ -246,10 +246,15 @@ class SGDSVD(Optimizer):  # noqa: D101
                 if p.grad is None:
                     continue
                 eigen = self.eigens[p]
-                _, eigen_value, eigen_vector = torch.svd(fea_in[p], some=False)
-                eigen['eigen_value'] = eigen_value
-                eigen['eigen_vector'] = eigen_vector
-    
+                try:
+                    _, eigen_value, eigen_vector = torch.svd(fea_in[p], some=False)
+                    eigen['eigen_value'] = eigen_value
+                    eigen['eigen_vector'] = eigen_vector
+                except Exception as e:
+                    print(f"Error computing SVD for {p}: {e}")
+                    print("Max abs of fea_in:", torch.max(torch.abs(fea_in[p])))
+                    raise e
+
     def get_transforms(self):
         """Compute the transformation matrices for parameters based on last eigen decomposition."""
         for group in self.param_groups:

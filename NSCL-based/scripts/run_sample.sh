@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # difference: the way to update covariance
-GPUID=0
-REPEAT=1
+GPUID=$1
+REPEAT=$2
 
 ############################################ CIFAR100-10
 # For Ours

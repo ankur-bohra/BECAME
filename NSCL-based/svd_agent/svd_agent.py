@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from .agent import Agent
 import optim
 import torch
@@ -112,7 +113,7 @@ class SVDAgent(Agent):
             handles.append(m.register_forward_hook(hook=self.compute_cov))
 
         
-        for i, (inputs, target, task) in enumerate(train_loader):
+        for i, (inputs, target, task) in tqdm(enumerate(train_loader), desc='Computing SVD covariances', total=len(train_loader)):
             if self.config['gpu']:
                 inputs = inputs.cuda()
             self.model.forward(inputs)

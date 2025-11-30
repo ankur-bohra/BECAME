@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # filepath: /mnt/c/Users/ankur/Programs/BML/BECAME/NSCL-based/scripts/run_some_sgd.sh
-GPUID=0
-REPEAT=1
+GPUID=$1
+REPEAT=$2
 
 CUDA_VISIBLE_DEVICES=$1 python -u main.py --gpuid $GPUID --reg_coef 100 \
     --model_lr 0.1 \

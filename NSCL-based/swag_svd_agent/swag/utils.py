@@ -193,7 +193,7 @@ def _set_momenta(module, momenta):
         module.momentum = momenta[module]
 
 
-def bn_update(loader, model, verbose=False, subset=None, **kwargs):
+def bn_update(loader, model, verbose=True, subset=None, **kwargs):
     """
         BatchNorm buffers update (if any).
         Performs 1 epochs to estimate buffers average using train dataset.
@@ -217,8 +217,9 @@ def bn_update(loader, model, verbose=False, subset=None, **kwargs):
             loader = itertools.islice(loader, num_batches)
         if verbose:
 
-            loader = tqdm.tqdm(loader, total=num_batches)
-        for input, _ in loader:
+            loader = tqdm.tqdm(loader, total=num_batches, desc="BN update")
+        for sample in loader:
+            input = sample[0]
             input = input.cuda(non_blocking=True)
             input_var = torch.autograd.Variable(input)
             b = input_var.data.size(0)

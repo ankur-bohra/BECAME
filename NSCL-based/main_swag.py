@@ -158,8 +158,16 @@ def run(args, results_dir):
         # update fisher matrix
         if args.merge_method == 'fisher':
             agent.update_fisher_matrix_diag(train_loader)
-        elif args.merge_method == 'swag':
-            agent.update_precision()
+        #! For SWAG, the precision matrix will be computed internally before merging
+        # elif args.merge_method == 'swag':
+        #     agent.update_precision()
+
+        # Inspect variables for nans
+        # if i > 0:
+        #     for name, param in agent.model.named_parameters():
+        #         if torch.isnan(param).any():
+        #             print('NaN detected in', name)
+        #             exit(-1)
 
         # AfterTrain
         agent.after_train(train_loader)

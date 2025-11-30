@@ -1,4 +1,4 @@
 from .swag import SWAG
-import utils
+from . import utils
 
 __all__ = ["SWAG", "utils"]

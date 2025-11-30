@@ -77,7 +77,7 @@ class Agent(nn.Module):
         self.merge_method = self.config['merge_method']
         assert self.merge_method in ['fisher', 'weighted_average', 'swag'], "merge method not supported!"
         if self.merge_method == 'fisher':
-            self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n)}
+            self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n) and self.model._parameters[n] is not None}
         elif self.merge_method == 'weighted_average':
             pass
         elif self.merge_method == 'swag':
@@ -94,11 +94,17 @@ class Agent(nn.Module):
             # D~ M_inv D~^T -> can't store sum directly without storing full product
             # self.sum_inv_diag = torch.zeros(n_params).to(self.device)
             # self.low_rank_terms = []  # List of (D~, M_inv) tuples
+            names = []
+            for n, p in self.model.named_parameters():
+                if p.requires_grad and not re.match(r'^last', n):  # Uncomment if filtering head
+                    module_name, param_name = n.rsplit('.', 1)
+                    module = self.model.get_submodule(module_name)
+                    if module._parameters[param_name] is not None:
+                        names.append(n)
             self.sum_inv_diag_map = {
-                n: torch.zeros_like(p, device=self.device) 
-                for n, p in self.model.named_parameters() 
-                if p.requires_grad and not re.match(r'^last', n) # Uncomment if filtering head
+                n: torch.zeros_like(p, device=self.device) for n, p in self.model.named_parameters() if n in names
             }
+            # print("sum_inv_diag_map keys:", list(self.sum_inv_diag_map.keys()))
             self.low_rank_history = []
             self.swag_model = None
             self.current_inv_diag_map = None
@@ -300,14 +306,26 @@ class Agent(nn.Module):
                 if self.merge_method == 'swag':
                     # "path" has ended, take SWA mean
                     self.swag_model.sample(0.0)
+                    self.swag_model.cuda()
                     utils.bn_update(train_loader, self.swag_model)  # Update BN stats for the averaged model
+                    self.swag_model.cpu()
                     # Copy params to active model
-                    for module, name in self.swag_model.params:
-                        mean = module.__getattr__("%s_mean" % name)
-                        param = module._parameters[name]
-                        param.data.copy_(mean.data)
+                    for param in self.sum_inv_diag_map.keys():
+                        module_name, param_name = param.rsplit('.', 1)
+                        swag_module = self.swag_model.base.get_submodule(module_name)
+                        model_module = self.model.get_submodule(module_name)
+                        mean = swag_module.__getattr__("%s_mean" % param_name)
+                        model_module.__getattr__("%s" % param_name).data.copy_(mean.data)
                     # Now, SWAG mean is available to merge in self.model, and SWAG buffers
                     # will be used from self.swag_model for precision
+
+                    # merge_n_analysis will assume the current precision matrix has been
+                    # computed. Precision must be updated here.
+                    # If this early stop is so early that no SWAG models were collected,
+                    # collect one model to fill buffers
+                    if self.swag_model.n_models.item() == 0:
+                        self.swag_model.collect_model(self.model)
+                    self.update_precision()
                 self.merge_n_analysis(train_loader, epoch)
                 
             if epoch==0 and self.model_optimizer.switch==True and val_loader!=None:
@@ -432,19 +450,33 @@ class Agent(nn.Module):
             # calculate merge coef
             # coeff = delta^T @ F_t @ delta / delta^T @ (F_t + precision) @ delta
             delta_map = {k: cur_model[k] - old_model[k] for k in self.sum_inv_diag_map}
+            # At this point the precision matrix for this task should already have been
+            # computed
+            # print("Computing SWAG merge numerator...")
+            # print("diag_map:", self.current_inv_diag_map)
             numerator = self.compute_precision_quadratic_form_woodbury(
                 delta_theta_map=delta_map,
                 diag_map=self.current_inv_diag_map,
                 low_rank_list=[self.low_rank_history[-1]]
             )
+            # print("Computing SWAG merge denominator...")
             denominator = self.compute_precision_quadratic_form_woodbury(
                 delta_theta_map=delta_map,
                 diag_map=self.sum_inv_diag_map,
                 low_rank_list=self.low_rank_history
             )
+            # if torch.isclose(torch.tensor(numerator), torch.tensor(0.0)):
+            #     print("WARNING: Numerator close to 0 in SWAG merge coef calculation.")
+            # if torch.isclose(torch.tensor(denominator), torch.tensor(0.0)):
+            #     print("WARNING: Denominator close to 0 in SWAG merge coef calculation.")
+            # if torch.isclose(torch.tensor(denominator), torch.tensor(0.0)) or torch.isclose(torch.tensor(numerator), torch.tensor(0.0)):
+            #     exit(-1)
             coef = numerator / denominator
             for k in old_model.keys():
                 ans[k] = old_model[k]*(1-coef) + cur_model[k]*coef
+                if torch.isnan(ans[k]).any():
+                    print(f"NaN detected in parameter {k} during SWAG merge!")
+                    exit(-1)
         self.model.load_state_dict(ans)
                 
     # test without task id
@@ -525,9 +557,24 @@ class Agent(nn.Module):
     def update_precision(self):
         print("Updating Precision Matrices...")
         # self.swag_model.collect_model(self.model)
-        
-        swag_buffers = dict(self.swag_model.named_buffers())
-        rank = self.swag_model.cov_mat_rank
+        swag_buffers = {}
+        for (buffer_name, buffer) in self.swag_model.base.named_buffers():
+            stripped_name = buffer_name.replace('base.', '')
+            swag_buffers[stripped_name] = buffer
+        rank = 0
+        for key in swag_buffers.keys():
+            if re.match(r'.*_cov_mat_sqrt', key):
+                rank = swag_buffers[key].size(0)
+                break
+        else:
+            print("No covariance buffers found in SWAG model!")
+            print("Buffers:", list(swag_buffers.keys()))
+            exit(-1)
+        if rank == 0:
+            print("Covariance buffers were found but have rank 0!")
+            print("Buffers:", list(swag_buffers.keys()))
+            print("Sample buffer:", swag_buffers[key])
+            exit(-1)
         M_global = torch.eye(rank, device=self.device)
         
         current_task_D_tilde_map = {}
@@ -542,9 +589,10 @@ class Agent(nn.Module):
             cov_key = f"{name}_cov_mat_sqrt"
             
             if cov_key in swag_buffers:
-                D_hat = swag_buffers[cov_key].t()
-                mean = swag_buffers[mean_key]
-                sq_mean = swag_buffers[sq_mean_key]
+                # print(f"Precision processing parameter: {name}")
+                D_hat = swag_buffers[cov_key].t().to(self.device)
+                mean = swag_buffers[mean_key].to(self.device)
+                sq_mean = swag_buffers[sq_mean_key].to(self.device)
                 
                 var = torch.clamp(sq_mean - mean.pow(2), min=self.swag_model.var_clamp)
                 inv_diag = 1.0 / var
@@ -553,16 +601,16 @@ class Agent(nn.Module):
                 self.current_inv_diag_map[name] = inv_diag.detach().clone()
                 
                 # 2. Add to TOTAL map (for Denominator)
-                self.sum_inv_diag_map[name] += inv_diag.detach()
+                self.sum_inv_diag_map[name] += inv_diag.detach()  # Accumulated on GPU
                 
                 # ... (Compute D_tilde and M_global same as previous) ...
-                D_tilde = D_hat * inv_diag.unsqueeze(1)
-                current_task_D_tilde_map[name] = D_tilde.cpu()
+                D_tilde = D_hat * inv_diag.view(-1).unsqueeze(1)  # Flatten inv_diag
+                current_task_D_tilde_map[name] = D_tilde.cpu()  # Low rank histories are stored on CPU
                 
                 M_part = torch.matmul(D_hat.t(), D_tilde)
                 M_global += M_part
 
-        M_inv = torch.linalg.inv(M_global).cpu()
+        M_inv = torch.linalg.inv(M_global).cpu()  # Low rank histories are stored on CPU
         self.low_rank_history.append((current_task_D_tilde_map, M_inv))
         
         print(f"Task precision stored.")
@@ -589,13 +637,22 @@ class Agent(nn.Module):
 
         # 1. Diagonal term
         scalar_diag_total = 0.0
+        # print("diag_map keys:", list(diag_map.keys()))
+        # print("delta_theta_map keys:", list(delta_theta_map.keys()))
         for key, inv_diag in diag_map.items():
             if key in delta_theta_map:
                 delta = delta_theta_map[key].view(-1)
+                # if torch.allclose(delta, torch.zeros_like(delta)):
+                #     print(f"Warning: Zero delta for parameter {key} in precision quadratic form.")
                 # delta^2 * diag
-                scalar_diag_total += (delta.pow(2) * inv_diag.view(-1)).sum()
+                contrib = (delta.pow(2) * inv_diag.view(-1)).sum().item()
+                scalar_diag_total += contrib
+                # print(f"Diag contrib for {key}: {contrib}")
             else:
                 print(f"Warning: Parameter {key} not found in delta_theta_map for precision quadratic form.")
+        # if torch.isclose(torch.tensor(scalar_diag_total), torch.tensor(0.0, device=self.device)):
+        #     print("Warning: Diagonal term of precision quadratic form is zero.")
+        #     exit(-1)
 
         # 2. Low-Rank terms
         scalar_low_rank_total = 0.0
