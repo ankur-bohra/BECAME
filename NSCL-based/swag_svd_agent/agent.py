@@ -77,7 +77,7 @@ class Agent(nn.Module):
         self.merge_method = self.config['merge_method']
         assert self.merge_method in ['fisher', 'weighted_average', 'swag'], "merge method not supported!"
         if self.merge_method == 'fisher':
-            self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n) and self.model._parameters[n] is not None}
+            self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n)}
         elif self.merge_method == 'weighted_average':
             pass
         elif self.merge_method == 'swag':
@@ -208,7 +208,7 @@ class Agent(nn.Module):
         #! Change schedule for SWAG?
         self.model_scheduler = torch.optim.lr_scheduler.MultiStepLR(self.model_optimizer,
                                                                     milestones=self.config['schedule'],
-                                                                    gamma=0.1)
+                                                                    gamma=self.config['gamma']) # Was 0.1 last time
 
     def train_task(self, train_loader, val_loader=None):
         raise NotImplementedError
@@ -304,6 +304,11 @@ class Agent(nn.Module):
             # merge the old model during training
             if self.t>1 and self.model_optimizer.switch==False and (epoch+1 in self.merge_list or stop_n_merge):
                 if self.merge_method == 'swag':
+                    # If this early stop is so early that no SWAG models were collected,
+                    # collect one model to fill buffers
+                    if self.swag_model.n_models.item() == 0:
+                        self.swag_model.collect_model(self.model)
+
                     # "path" has ended, take SWA mean
                     self.swag_model.sample(0.0)
                     self.swag_model.cuda()
@@ -321,10 +326,6 @@ class Agent(nn.Module):
 
                     # merge_n_analysis will assume the current precision matrix has been
                     # computed. Precision must be updated here.
-                    # If this early stop is so early that no SWAG models were collected,
-                    # collect one model to fill buffers
-                    if self.swag_model.n_models.item() == 0:
-                        self.swag_model.collect_model(self.model)
                     self.update_precision()
                 self.merge_n_analysis(train_loader, epoch)
                 
@@ -536,6 +537,18 @@ class Agent(nn.Module):
         n_samples = len(train_loader.dataset)
         fisher = {n: (p / n_samples) for n, p in fisher.items()}
         return fisher
+
+    # [FM]update fisher matrix
+    def update_fisher_matrix_diag(self, train_loader):
+        t = self.t
+        """Runs after training all the epochs of the task (after the train session)"""
+        # calculate Fisher information
+        curr_fisher = self.compute_fisher_matrix_diag(train_loader)
+        # merge fisher information, we do not want to keep fisher information for each task in memory
+        for n in self.fisher.keys():
+            self.fisher[n] += curr_fisher[n]
+        print(f'Update Fisher Matrix for task {self.trained_tasks[-1]}')
+        return curr_fisher
     
     # [FM]update fisher matrix
     # Used for approximation of precision matrix

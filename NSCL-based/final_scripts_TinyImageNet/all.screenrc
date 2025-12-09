@@ -1,0 +1,15 @@
+# One logfile per window, named by window title
+logfile ./final_logs_TinyImageNet/%t.log
+deflog on
+
+# GPU 3
+screen -t adam-main_swag-swag_svd_agent-swag bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_TinyImageNet/adam-main_swag-swag_svd_agent-swag.sh 3 5'
+
+# GPU 2
+screen -t sgd2-main_swag-swag_svd_agent-fisher0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_TinyImageNet/sgd2-main_swag-swag_svd_agent-fisher0p5.sh 2 5'
+
+# GPU 0
+screen -t sgd2-main_swag-swag_svd_agent-swag0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_TinyImageNet/sgd2-main_swag-swag_svd_agent-swag0p5.sh 0 5'
+
+# mkdir -p final_logs_TinyImageNet
+# screen -dmS TinyImageNet_runs -c ./final_scripts_TinyImageNet/all.screenrc
