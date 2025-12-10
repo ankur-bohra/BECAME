@@ -156,9 +156,9 @@ def run(args, results_dir):
             agent.train_task(train_loader, val_loader, args.schedule[-1], early_stop=args.early_stop)
             
         # update fisher matrix
-        if args.merge_method == 'fisher':
+        if 'fisher' in args.merge_method:
             agent.update_fisher_matrix_diag(train_loader)
-        #! For SWAG, the precision matrix will be computed internally before merging
+        #! For SWAG, the precision matrix will have been computed internally before merging
         # elif args.merge_method == 'swag':
         #     agent.update_precision()
 
@@ -290,7 +290,7 @@ def get_args(argv):
                         help='whether to use multi-task learning, training all the tasks at the same time')
     parser.add_argument('--suffix', type=str, default='', help='the suffix for the results dir')
     # parser.add_argument('--fisher_m', default=False, action='store_true', help='whether to use fisher matrix')
-    parser.add_argument('--merge_method', default='weighted_average', help='the method used for merging models', choices=['fisher', 'swag'], required=False)
+    parser.add_argument('--merge_method', default='weighted_average', help='the method used for merging models', choices=['fisher', 'swag', 'fisher-mixture', 'swag-diag'], required=False)
     parser.add_argument('--do_analysis', default=False, action='store_true', help='whether to do merge analysis')
     parser.add_argument('--val_freq', type=int, default=10, help='the frequency of validation')
     parser.add_argument('--connector_base', default=False, action='store_true', help='whether to use connector')

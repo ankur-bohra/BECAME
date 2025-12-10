@@ -75,17 +75,14 @@ class Agent(nn.Module):
         # self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n)}
         # self.fisher_m = self.config['fisher_m']
         self.merge_method = self.config['merge_method']
-        assert self.merge_method in ['fisher', 'weighted_average', 'swag'], "merge method not supported!"
-        if self.merge_method == 'fisher':
+        assert self.merge_method in ['fisher', 'weighted_average', 'swag', 'swag-diag', 'fisher-mixture'], "merge method not supported!"
+        if 'fisher' in self.merge_method:
             self.fisher = {n: torch.zeros(p.shape).to(self.device) for n, p in self.model.named_parameters() if p.requires_grad and not re.match(r'^last', n)}
         elif self.merge_method == 'weighted_average':
             pass
-        elif self.merge_method == 'swag':
-            # raise Exception("SWAG not taking 'not last' parameters!!.")
+        elif 'swag' in self.merge_method:
             # Σ = 0.5 * (diag(var) + D^/sqrt(k-1) (D^)^T/sqrt(k-1))
             # Since D^ (D^)^T isn't diagonal, can't store separately for params
-            # Find total number of parameters in model
-            # n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
             # Woodbury identity: 
             # Σ^-1 = 2 * (diag(var)^-1 - diag(var)^-1 D^ (I + D^T diag(var)^-1 D^)^-1 D^T diag(var)^-1)
             #      = 2 * (inv_diag - D~ M_inv D~^T)
@@ -255,7 +252,7 @@ class Agent(nn.Module):
         return losses.avg, acc.avg
 
     def train_model(self, train_loader, val_loader=None, epochs=1, early_stop=False):
-        if self.merge_method == 'swag':
+        if 'swag' in self.merge_method:
             # A new "path" is starting, buffer history should be forgotten
             self.swag_model = self.create_swag_model(param_names=list(self.sum_inv_diag_map.keys()))  # Equivalent to resetting buffers
 
@@ -277,7 +274,7 @@ class Agent(nn.Module):
             losses, acc = self.train_epoch(train_loader, epoch, count_cls_step)
 
             if (
-                self.merge_method == 'swag'
+                'swag' in self.merge_method
                 and epoch + 1 > self.config['swag_start']
                 and (epoch + 1) % self.config['swag_collect_freq'] == 0
             ):
@@ -303,7 +300,7 @@ class Agent(nn.Module):
             
             # merge the old model during training
             if self.t>1 and self.model_optimizer.switch==False and (epoch+1 in self.merge_list or stop_n_merge):
-                if self.merge_method == 'swag':
+                if 'swag' in self.merge_method:
                     # If this early stop is so early that no SWAG models were collected,
                     # collect one model to fill buffers
                     if self.swag_model.n_models.item() == 0:
@@ -447,37 +444,40 @@ class Agent(nn.Module):
             # merge model
             for k, p in old_model.items():
                 ans[k] = old_model[k]*(1-coef) + cur_model[k]*coef
+            if self.merge_method == "fisher-mixture":
+                # Update fisher to be the mixture's covariance
+                # We are modelling p_λ(θ) = (1-λ)N(θ; μ_old, Σ_old) + λN(θ; μ_new, Σ_new)
+                # E[θ] = (1-λ)μ_old + λμ_new (same as BECAME)
+                # Var[θ] = (1-λ)Σ_old + λΣ_new + λ(1-λ)(μ_old - μ_new)(μ_old - μ_new)^T
+                # Σ_old, Σ_new are approximated as diagonal with inverse given by fisher
+                # so we also take the diagonal of the final term
+                for n in self.fisher.keys():
+                    var_old = 1/self.fisher[n]
+                    var_new = 1/curr_fisher[n]
+                    var_mixture = (1 - coef) * var_old \
+                                + coef * var_new \
+                                + coef * (1 - coef) * (old_model[n] - cur_model[n]).pow(2)
+                    self.fisher[n] = 1/var_mixture  # Store precision
         elif self.merge_method == 'swag':
             # calculate merge coef
             # coeff = delta^T @ F_t @ delta / delta^T @ (F_t + precision) @ delta
             delta_map = {k: cur_model[k] - old_model[k] for k in self.sum_inv_diag_map}
             # At this point the precision matrix for this task should already have been
             # computed
-            # print("Computing SWAG merge numerator...")
-            # print("diag_map:", self.current_inv_diag_map)
             numerator = self.compute_precision_quadratic_form_woodbury(
                 delta_theta_map=delta_map,
                 diag_map=self.current_inv_diag_map,
-                low_rank_list=[self.low_rank_history[-1]]
+                low_rank_list=[self.low_rank_history[-1]] if self.merge_method != 'swag-diag' else []
             )
             # print("Computing SWAG merge denominator...")
             denominator = self.compute_precision_quadratic_form_woodbury(
                 delta_theta_map=delta_map,
                 diag_map=self.sum_inv_diag_map,
-                low_rank_list=self.low_rank_history
+                low_rank_list=self.low_rank_history if self.merge_method != 'swag-diag' else []
             )
-            # if torch.isclose(torch.tensor(numerator), torch.tensor(0.0)):
-            #     print("WARNING: Numerator close to 0 in SWAG merge coef calculation.")
-            # if torch.isclose(torch.tensor(denominator), torch.tensor(0.0)):
-            #     print("WARNING: Denominator close to 0 in SWAG merge coef calculation.")
-            # if torch.isclose(torch.tensor(denominator), torch.tensor(0.0)) or torch.isclose(torch.tensor(numerator), torch.tensor(0.0)):
-            #     exit(-1)
             coef = numerator / denominator
             for k in old_model.keys():
                 ans[k] = old_model[k]*(1-coef) + cur_model[k]*coef
-                if torch.isnan(ans[k]).any():
-                    print(f"NaN detected in parameter {k} during SWAG merge!")
-                    exit(-1)
         self.model.load_state_dict(ans)
                 
     # test without task id
@@ -542,6 +542,10 @@ class Agent(nn.Module):
     def update_fisher_matrix_diag(self, train_loader):
         t = self.t
         """Runs after training all the epochs of the task (after the train session)"""
+        if self.merge_method == 'fisher-mixture' and t > 1:
+            # For mixture, the fisher update is done during merge, which is performed
+            # before this function is called
+            return self.fisher
         # calculate Fisher information
         curr_fisher = self.compute_fisher_matrix_diag(train_loader)
         # merge fisher information, we do not want to keep fisher information for each task in memory
@@ -550,81 +554,65 @@ class Agent(nn.Module):
         print(f'Update Fisher Matrix for task {self.trained_tasks[-1]}')
         return curr_fisher
     
-    # [FM]update fisher matrix
-    # Used for approximation of precision matrix
-    # def update_precision(self, train_loader):
-    #     """Runs after training all the epochs of the task (after the train session)"""
-    #     self.swag_model.collect_model(self.model)  # Update statistic buffers
-    #     _, var_list, cov_mat_sqrt_list = self.swag_model.generate_mean_var_covar()
-    #     var_diag = torch.cat([v.view(-1) for v in var_list])
-    #     # Σ^-1 = 2 * (diag(var)^-1 - diag(var)^-1 D^ (I + D^T diag(var)^-1 D^)^-1 D^T diag(var)^-1)
-    #     #      = 2 * (inv_diag - D~ M_inv D~^T)
-    #     inv_diag = 1/var_diag
-    #     self.sum_inv_diag += inv_diag
-    #     D_hat = torch.cat(cov_mat_sqrt_list, dim=1).t()  # k x n_params -> n_params x k
-    #     D_tilde = D_hat * inv_diag.unsqueeze(1)  # Scale rows by inv_diag
-    #     M = torch.eye(D_tilde.size(1)).to(self.device) + D_hat.t() @ D_tilde
-    #     M_inv = torch.linalg.inv(M)
-    #     self.low_rank_terms.append((D_tilde, M_inv))
-    
     def update_precision(self):
         print("Updating Precision Matrices...")
-        # self.swag_model.collect_model(self.model)
+
         swag_buffers = {}
         for (buffer_name, buffer) in self.swag_model.base.named_buffers():
             stripped_name = buffer_name.replace('base.', '')
             swag_buffers[stripped_name] = buffer
-        rank = 0
-        for key in swag_buffers.keys():
-            if re.match(r'.*_cov_mat_sqrt', key):
-                rank = swag_buffers[key].size(0)
-                break
-        else:
-            print("No covariance buffers found in SWAG model!")
-            print("Buffers:", list(swag_buffers.keys()))
-            exit(-1)
-        if rank == 0:
-            print("Covariance buffers were found but have rank 0!")
-            print("Buffers:", list(swag_buffers.keys()))
-            print("Sample buffer:", swag_buffers[key])
-            exit(-1)
-        M_global = torch.eye(rank, device=self.device)
         
-        current_task_D_tilde_map = {}
+        if self.merge_method != 'swag-diag':
+            # We will are M and D_tilde for each task for the low rank correction
+            rank = 0
+            for key in swag_buffers.keys():
+                if re.match(r'.*_cov_mat_sqrt', key):
+                    rank = swag_buffers[key].size(0)
+                    break
+            else:
+                print("No covariance buffers found in SWAG model!")
+                print("Buffers:", list(swag_buffers.keys()))
+                exit(-1)
+            if rank == 0:
+                print("Covariance buffers were found but have rank 0!")
+                print("Buffers:", list(swag_buffers.keys()))
+                print("Sample buffer:", swag_buffers[key])
+                exit(-1)
+            M_global = torch.eye(rank, device=self.device)
+            current_task_D_tilde_map = {}
+
         # Store current task's diagonal separately for current precision computation
         # The low rank history is already stored separately
         self.current_inv_diag_map = {}
         
         for name in self.sum_inv_diag_map.keys():
-            # ... (Buffer retrieval logic same as previous) ...
             mean_key = f"{name}_mean"
             sq_mean_key = f"{name}_sq_mean"
             cov_key = f"{name}_cov_mat_sqrt"
             
             if cov_key in swag_buffers:
-                # print(f"Precision processing parameter: {name}")
-                D_hat = swag_buffers[cov_key].t().to(self.device)
                 mean = swag_buffers[mean_key].to(self.device)
                 sq_mean = swag_buffers[sq_mean_key].to(self.device)
                 
                 var = torch.clamp(sq_mean - mean.pow(2), min=self.swag_model.var_clamp)
                 inv_diag = 1.0 / var
                 
-                # 1. Save to CURRENT map (for Numerator)
-                self.current_inv_diag_map[name] = inv_diag.detach().clone()
+                # Diagonal precision contributions
+                self.current_inv_diag_map[name] = inv_diag.detach().clone()  # For numerator (current)
+                self.sum_inv_diag_map[name] += inv_diag.detach()  # For denominator (cumulative)
                 
-                # 2. Add to TOTAL map (for Denominator)
-                self.sum_inv_diag_map[name] += inv_diag.detach()  # Accumulated on GPU
-                
-                # ... (Compute D_tilde and M_global same as previous) ...
-                D_tilde = D_hat * inv_diag.view(-1).unsqueeze(1)  # Flatten inv_diag
-                current_task_D_tilde_map[name] = D_tilde.cpu()  # Low rank histories are stored on CPU
-                
-                M_part = torch.matmul(D_hat.t(), D_tilde)
-                M_global += M_part
+                # Low rank contributions
+                if self.merge_method != 'swag-diag':
+                    D_hat = swag_buffers[cov_key].t().to(self.device)
+                    D_tilde = D_hat * inv_diag.view(-1).unsqueeze(1)  # Flatten inv_diag
+                    current_task_D_tilde_map[name] = D_tilde.cpu()  # Low rank histories are stored on CPU
+                    
+                    M_part = torch.matmul(D_hat.t(), D_tilde)
+                    M_global += M_part
 
-        M_inv = torch.linalg.inv(M_global).cpu()  # Low rank histories are stored on CPU
-        self.low_rank_history.append((current_task_D_tilde_map, M_inv))
+        if self.merge_method != 'swag-diag':
+            M_inv = torch.linalg.inv(M_global).cpu()  # Low rank histories are stored on CPU
+            self.low_rank_history.append((current_task_D_tilde_map, M_inv))
         
         print(f"Task precision stored.")
 
@@ -650,26 +638,19 @@ class Agent(nn.Module):
 
         # 1. Diagonal term
         scalar_diag_total = 0.0
-        # print("diag_map keys:", list(diag_map.keys()))
-        # print("delta_theta_map keys:", list(delta_theta_map.keys()))
         for key, inv_diag in diag_map.items():
             if key in delta_theta_map:
                 delta = delta_theta_map[key].view(-1)
-                # if torch.allclose(delta, torch.zeros_like(delta)):
-                #     print(f"Warning: Zero delta for parameter {key} in precision quadratic form.")
                 # delta^2 * diag
                 contrib = (delta.pow(2) * inv_diag.view(-1)).sum().item()
                 scalar_diag_total += contrib
                 # print(f"Diag contrib for {key}: {contrib}")
             else:
                 print(f"Warning: Parameter {key} not found in delta_theta_map for precision quadratic form.")
-        # if torch.isclose(torch.tensor(scalar_diag_total), torch.tensor(0.0, device=self.device)):
-        #     print("Warning: Diagonal term of precision quadratic form is zero.")
-        #     exit(-1)
 
         # 2. Low-Rank terms
         scalar_low_rank_total = 0.0
-        for (task_D_tilde_map, task_M_inv) in low_rank_list:            
+        for (task_D_tilde_map, task_M_inv) in low_rank_list:
             # Project delta onto this task's low-rank basis
             # v_global = D~^T * delta
             v_global = torch.zeros(task_M_inv.shape[0], device=self.device)
