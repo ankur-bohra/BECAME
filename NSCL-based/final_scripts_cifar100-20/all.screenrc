@@ -3,13 +3,13 @@ logfile ./final_logs_cifar100-20/%t.log
 deflog on
 
 # GPU 0
-screen -t adam-main_swag-swag_svd_agent-swag bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_cifar100-20/adam-main_swag-swag_svd_agent-swag.sh 0 5'
+screen -t adam-main_swag-swag_svd_agent-swag bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became ./final_scripts_cifar100-20/adam-main_swag-swag_svd_agent-swag.sh 0 5'
 
 # GPU 1
-screen -t sgd2-main_swag-swag_svd_agent-fisher0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_cifar100-20/sgd2-main_swag-swag_svd_agent-fisher0p5.sh 1 5'
+screen -t sgd2-main_swag-swag_svd_agent-fisher0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became ./final_scripts_cifar100-20/sgd2-main_swag-swag_svd_agent-fisher0p5.sh 1 5'
 
 # GPU 3
-screen -t sgd2-main_swag-swag_svd_agent-swag0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became2 ./final_scripts_cifar100-20/sgd2-main_swag-swag_svd_agent-swag0p5.sh 3 5'
+screen -t sgd2-main_swag-swag_svd_agent-swag0p5 bash -lc 'source ~/.bashrc; conda run --no-capture-output -n became ./final_scripts_cifar100-20/sgd2-main_swag-swag_svd_agent-swag0p5.sh 3 5'
 
 # mkdir -p final_logs_cifar100-20
 # screen -dmS cifar100_20_runs -c ./final_scripts_cifar100-20/all.screenrc
